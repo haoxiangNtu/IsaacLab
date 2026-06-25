@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from isaaclab_newton.physics import KaminoSolverCfg, MJWarpSolverCfg, NewtonCfg
+from isaaclab_newton.physics import KaminoSolverCfg, MJWarpSolverCfg, NewtonCfg, StiffGIPCSolverCfg
 from isaaclab_ovphysx.physics import OvPhysxCfg
 from isaaclab_physx.physics import PhysxCfg
 
@@ -60,6 +60,21 @@ class CartpolePhysicsCfg(PresetCfg):
         use_cuda_graph=True,
     )
     ovphysx: OvPhysxCfg = OvPhysxCfg()
+    # StiffGIPC (IPC) — same direct task as the UIPC fork's working cartpole, so we can
+    # compare apples-to-apples (both IPC solvers, same task/reward/termination).
+    stiffgipc: NewtonCfg = NewtonCfg(
+        solver_cfg=StiffGIPCSolverCfg(
+            use_effort_control=True,
+            skip_all_collision=True,
+            newton_iter_cap=50,
+            newton_tol=5.0e-2,
+            joint_strength_ratio=100.0,
+            revolute_driving_strength_ratio=0.0,  # PASSIVE pole (fix: active driving froze it)
+        ),
+        num_substeps=1,
+        debug_mode=False,
+        use_cuda_graph=False,
+    )
 
 
 @configclass
