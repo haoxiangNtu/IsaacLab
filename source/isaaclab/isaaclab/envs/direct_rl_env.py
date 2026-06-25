@@ -501,11 +501,14 @@ class DirectRLEnv(gym.Env):
             The seed used for random generator.
         """
         # set seed for replicator
+        # NOTE: broadened from ModuleNotFoundError to Exception — in the pip Isaac Sim 6.0.0.0 GUI
+        # stack, omni.replicator.core loads as a broken kit extension (missing set_global_seed),
+        # which is irrelevant for viewing/eval (replicator = synthetic-data generation).
         try:
             import omni.replicator.core as rep
 
             rep.set_global_seed(seed)
-        except ModuleNotFoundError:
+        except Exception:
             pass
         # set seed for torch and other libraries
         return configure_seed(seed)

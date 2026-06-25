@@ -17,6 +17,7 @@ import warp as wp
 from newton.sensors import SensorContact as NewtonContactSensor
 
 import isaaclab.utils.string as string_utils
+from isaaclab.physics import PhysicsManager
 from isaaclab.sensors.contact_sensor.base_contact_sensor import BaseContactSensor
 from isaaclab.utils.warp import ProxyArray
 
@@ -282,7 +283,7 @@ class ContactSensor(BaseContactSensor):
         self._generate_force_matrix = bool(self.cfg.filter_prim_paths_expr or self.cfg.filter_shape_prim_expr)
 
         try:
-            self._sensor_key = NewtonManager.add_contact_sensor(
+            self._sensor_key = self._add_contact_sensor(
                 body_names_expr=self.cfg.prim_path if not self.cfg.sensor_shape_prim_expr else None,
                 shape_names_expr=self.cfg.sensor_shape_prim_expr or None,
                 contact_partners_body_expr=self.cfg.filter_prim_paths_expr or None,
@@ -297,6 +298,35 @@ class ContactSensor(BaseContactSensor):
                 f" with sensor shape expr '{self.cfg.sensor_shape_prim_expr}': {err}"
             )
             raise RuntimeError(self._init_error) from err
+
+    def _add_contact_sensor(
+        self,
+        body_names_expr: str | list[str] | None,
+        shape_names_expr: str | list[str] | None,
+        contact_partners_body_expr: str | list[str] | None,
+        contact_partners_shape_expr: str | list[str] | None,
+    ):
+        solver = NewtonManager._solver
+        solver_cfg = getattr(PhysicsManager._cfg, "solver_cfg", None)
+        is_stiffgipc = (
+            (solver is not None and solver.__class__.__name__ == "SolverStiffGIPC")
+            or getattr(solver_cfg, "solver_type", None) == "stiffgipc"
+        )
+        if is_stiffgipc:
+            from isaaclab_newton.physics.stiffgipc_manager import NewtonStiffGIPCManager
+
+            return NewtonStiffGIPCManager.add_contact_sensor(
+                body_names_expr=body_names_expr,
+                shape_names_expr=shape_names_expr,
+                contact_partners_body_expr=contact_partners_body_expr,
+                contact_partners_shape_expr=contact_partners_shape_expr,
+            )
+        return NewtonManager.add_contact_sensor(
+            body_names_expr=body_names_expr,
+            shape_names_expr=shape_names_expr,
+            contact_partners_body_expr=contact_partners_body_expr,
+            contact_partners_shape_expr=contact_partners_shape_expr,
+        )
 
     def _create_buffers(self):
         # Get Newton sensor count from total force: (n_sensors * n_envs)

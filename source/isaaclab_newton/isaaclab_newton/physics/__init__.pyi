@@ -16,6 +16,8 @@ __all__ = [
     "NewtonManager",
     "NewtonShapeCfg",
     "NewtonSolverCfg",
+    "NewtonStiffGIPCManager",
+    "StiffGIPCSolverCfg",
     "NewtonXPBDManager",
     "XPBDSolverCfg",
 ]
@@ -33,5 +35,7 @@ from .newton_manager_cfg import (
     NewtonShapeCfg,
     NewtonSolverCfg,
 )
+from .stiffgipc_manager import NewtonStiffGIPCManager
+from .stiffgipc_manager_cfg import StiffGIPCSolverCfg
 from .xpbd_manager import NewtonXPBDManager
 from .xpbd_manager_cfg import XPBDSolverCfg
