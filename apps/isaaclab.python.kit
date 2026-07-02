@@ -18,9 +18,13 @@ keywords = ["experience", "app", "usd"]
 "isaacsim.core.deprecation_manager" = { order = -100 }
 "isaacsim.core.experimental.materials" = {}
 "isaacsim.core.experimental.objects" = {}
-"isaacsim.core.experimental.primdata" = {}
+# isaacsim.core.experimental.primdata does not exist in Isaac Sim 6.0.0.0 (merged into
+# isaacsim.core.experimental.prims); removed so the GUI app can resolve dependencies.
+# "isaacsim.core.experimental.primdata" = {}
 "isaacsim.core.experimental.prims" = {}
 "isaacsim.core.experimental.utils" = {}
+# Added: the TOUCHMANIP project imports isaacsim.core.utils.torch (legacy core utils API).
+"isaacsim.core.utils" = {}
 "isaacsim.core.nodes" = {}
 "isaacsim.core.rendering_manager" = {}
 "isaacsim.core.simulation_manager" = {}
@@ -31,9 +35,9 @@ keywords = ["experience", "app", "usd"]
 "isaacsim.robot.policy.examples" = {}
 "isaacsim.robot.schema" = {}
 "isaacsim.robot.experimental.wheeled_robots" = {}
-"isaacsim.robot.wheeled_robots.nodes" = {}
+# "isaacsim.robot.wheeled_robots.nodes" = {}  # removed: not in Isaac Sim 6.0.0.0
 "isaacsim.sensors.experimental.physics" = {}
-"isaacsim.sensors.experimental.rtx" = {}
+# "isaacsim.sensors.experimental.rtx" = {}  # removed: not in Isaac Sim 6.0.0.0
 "isaacsim.simulation_app" = {}
 "isaacsim.storage.native" = {}
 "isaacsim.util.debug_draw" = {}
@@ -43,9 +47,9 @@ keywords = ["experience", "app", "usd"]
 "isaacsim.asset.importer.urdf" = {}
 "omni.physx.bundle" = {}
 "omni.physx.tensors" = {}
-"omni.replicator.core" = {}
-"omni.replicator.replicator_yaml" = {}
-"omni.syntheticdata" = {}
+# "omni.replicator.core" = {}  # removed: SDG not needed for viewing; broken as kit-ext in isaacsim 6.0.0.0
+# "omni.replicator.replicator_yaml" = {}  # removed (depends on replicator.core)
+# "omni.syntheticdata" = {}  # removed (SDG)
 "semantics.schema.editor" = {}
 "semantics.schema.property" = {}
 
@@ -276,6 +280,7 @@ folders = [
     "${exe-path}/exts",  # kit extensions
     "${exe-path}/extscore",  # kit core extensions
     "${exe-path}/../exts",  # isaac extensions
+    "${exe-path}/../extsDeprecated",  # isaac deprecated extensions (e.g. isaacsim.core.utils on IS6)
     "${exe-path}/../extscache",  # isaac cache extensions
     "${exe-path}/../extsPhysics",  # isaac physics extensions
     "${exe-path}/../isaacsim/exts",  # isaac extensions for pip

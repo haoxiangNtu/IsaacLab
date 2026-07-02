@@ -13,7 +13,9 @@ position sampled in the robot's root frame.
 
 from __future__ import annotations
 
-from isaaclab_newton.physics import MJWarpSolverCfg, NewtonCfg
+import os
+
+from isaaclab_newton.physics import MJWarpSolverCfg, NewtonCfg, StiffGIPCSolverCfg
 from isaaclab_newton.sim.schemas import NewtonDeformableBodyPropertiesCfg
 from isaaclab_newton.sim.spawners.materials import NewtonDeformableBodyMaterialCfg
 from isaaclab_physx.physics import PhysxCfg
@@ -59,7 +61,10 @@ from isaaclab_assets.robots.franka import FRANKA_PANDA_CFG  # isort:skip
 
 
 # Shared volume material parameters. The Newton config below uses the equivalent Lame parameters.
-YOUNGS_MODULUS = 8e4
+# 8e4 (jelly) was too soft for IPC: under the gripper it deformed deeply -> contact d->0 ->
+# barrier Kappa blew up (220->22335), Newton hit the iter cap, training death-spiralled.
+# 5e5 (soft rubber) keeps deformation shallow -> d stays > 0 -> Kappa bounded -> solvable.
+YOUNGS_MODULUS = 5e5
 POISSONS_RATIO = 0.25
 
 
@@ -149,6 +154,47 @@ class PhysicsCfg(PresetCfg):
         ),
         num_substeps=10,
         use_cuda_graph=True,
+    )
+
+    # StiffGIPC (IPC): unified rigid (ABD) + FEM soft + penetration-free contact in
+    # a single solver (no MJWarp+VBD coupling). num_substeps=1 (IPC self-iterates);
+    # CUDA graph off (the IPC engine.step does host<->device syncs).
+    stiffgipc: DeformableNewtonCfg = DeformableNewtonCfg(
+        solver_cfg=StiffGIPCSolverCfg(
+            young_modulus=YOUNGS_MODULUS,
+            newton_iter_cap=150,
+            relative_dhat=1.0e-3,
+            # Fixed 2 mm IPC barrier (absolute), so contact behaves identically at any
+            # num_envs. Without this, dHat = relative_dhat * full-scene bbox grows with
+            # env count → inconsistent/coupled contact across environments.
+            absolute_dhat=3.0e-3,
+            # Per-frame joint slew cap = ~6 rad/s @60fps (a real Franka does ~2-3 rad/s).
+            # The default 1.0 rad/frame = 60 rad/s lets the untrained policy demand huge
+            # one-frame joint jumps the IPC joint solve can't converge (Newton pegs at the
+            # iter cap with NO contact). A physical cap keeps each step solvable; measured
+            # sin² Newton iters: cap0.1 -> mean ~17 / 0 lockups (cap1.0 -> permanent lockup).
+            max_revolute_step_per_frame=0.1,
+            max_prismatic_step_per_frame=0.005,
+            friction_rate=0.5,
+            # Manipulator: arm self-collision is always excluded; also drop arm↔ground
+            # IPC contact so links aren't perturbed by the engine ground plane. The FEM
+            # block keeps ground contact and still rests on the table.
+            disable_articulation_ground_collision=True,
+            # Only the gripper (hand+fingers) may touch the soft cube -> forces a real
+            # finger grasp instead of shoving with the forearm, and cuts contact pairs.
+            # (task specifies WHICH links are the "gripper"; solver just applies the filter)
+            object_collision_link_filter=("finger", "hand"),
+        ),
+        model_cfg=NewtonModelCfg(
+            soft_contact_ke=1e4,
+            soft_contact_kd=1e-5,
+            soft_contact_mu=5.0,
+            shape_material_ke=4e4,
+            shape_material_kd=1e-5,
+            shape_material_mu=5.0,
+        ),
+        num_substeps=1,
+        use_cuda_graph=False,
     )
 
     physx: PhysxCfg = PhysxCfg()
@@ -331,15 +377,49 @@ class EventCfg:
 class RewardsCfg:
     """Lift-to-target reward for a deformable object."""
 
-    reaching_deformable = RewTerm(
-        func=mdp.deformable_ee_distance,
-        params={"std": 0.1, "asset_cfg": SceneEntityCfg("deformable")},
+    # --- Stage 1: reach a PRE-GRASP point ABOVE the cube (makes from-above the path) ---
+    reach_above = RewTerm(
+        func=mdp.reach_above_cube,
+        # std 0.6 (was 0.3): 1-tanh(d/std) saturates (~0 gradient) past ~3*std, so 0.3 died
+        # past ~0.9 m; if the policy ever flung the arm far it got stuck with no gradient to
+        # recover. 0.6 keeps a usable pull-back gradient out to ~1.8 m.
+        params={"height": 0.10, "std": 0.6, "asset_cfg": SceneEntityCfg("deformable")},
+        # big weight: getting the EE above the cube FAST is the learnable first step;
+        # w3 was too weak vs noise (reach_above peaked 0.2 then collapsed). 10 dominates
+        # early so the policy reliably reaches the pre-grasp pose, then the later stages build.
+        weight=10.0,
+    )
+    # --- Stage 2: descend to the cube COM, gated on being horizontally above it ---
+    reach_grasp = RewTerm(
+        func=mdp.reach_grasp_from_above,
+        params={"align_radius": 0.05, "std": 0.05, "asset_cfg": SceneEntityCfg("deformable")},
         weight=5.0,
     )
+    # --- Stage 3: reward CLOSING the gripper only when fingers straddle the cube ---
+    grasp_close = RewTerm(
+        func=mdp.grasp_when_close,
+        params={"max_dist": 0.04, "action_name": "gripper_action", "asset_cfg": SceneEntityCfg("deformable")},
+        weight=2.0,
+    )
+    # penalise diving below the table (StiffGIPC has no arm-ground collision)
+    ee_below_table = RewTerm(
+        func=mdp.ee_below_table_penalty,
+        params={"table_height": 0.0},
+        weight=-25.0,
+    )
+    # --- Anti-overpress: penalize slamming the soft block (per-env proxy for the IPC
+    # Newton=150 blow-up). The block's nodal speed spikes on a violent press; punishing
+    # it teaches a gentle grasp (a gentle press / slow lift stays under the threshold). ---
+    block_impact = RewTerm(
+        func=mdp.block_impact_penalty,
+        params={"vel_threshold": 0.5, "asset_cfg": SceneEntityCfg("deformable")},
+        weight=-2.0,
+    )
+    # --- Stage 4: lift (strengthened 5 -> 15, matching the standard lift-cube) ---
     lifting_deformable = RewTerm(
         func=mdp.deformable_lifted,
         params={"minimal_height": 0.04, "asset_cfg": SceneEntityCfg("deformable")},
-        weight=5.0,
+        weight=15.0,
     )
     deformable_goal_tracking = RewTerm(
         func=mdp.deformable_com_goal_distance,
@@ -362,15 +442,11 @@ class RewardsCfg:
         weight=5.0,
     )
 
-    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-1e-2)
-    gripper_close = RewTerm(
-        func=mdp.gripper_close_action,
-        params={"action_name": "gripper_action"},
-        weight=-1.0,
-    )
-    joint_vel = RewTerm(func=mdp.joint_vel_l2, weight=-1e-2)
-    joint_torque = RewTerm(func=mdp.joint_torques_l2, weight=-1e-4)
-    joint_acc = RewTerm(func=mdp.joint_acc_l2, weight=-1e-4)
+    # Only a LIGHT command-smoothness penalty. The old -1e-2 action_rate/joint_vel +
+    # gripper-close -1.0 made moving/grasping net-negative -> the policy stayed still.
+    # joint_vel / joint_torque / joint_acc penalties removed (per design: don't penalise
+    # joint dynamics); -1e-4 action_rate just keeps the EE command from being jerky.
+    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-1e-4)
 
 
 @configclass
@@ -395,7 +471,10 @@ class TerminationsCfg:
 
     ee_below_table = DoneTerm(
         func=mdp.ee_below_minimum,
-        params={"minimum_height": 0.0, "ee_frame_cfg": SceneEntityCfg("ee_frame")},
+        # relaxed 0.0 -> -0.1: the graded ee_below_table reward penalty now handles small
+        # dips (gives a gradient to climb back); only terminate on a catastrophic dive so
+        # episodes don't die before the policy can recover and proceed to grasping.
+        params={"minimum_height": -0.1, "ee_frame_cfg": SceneEntityCfg("ee_frame")},
     )
 
 
@@ -431,18 +510,36 @@ class FrankaSoftEnvCfg(ManagerBasedRLEnvCfg):
 
     def __post_init__(self) -> None:
         # general settings
-        self.decimation = 1
+        # decimation 4 (was 1): hold each policy action for 4 sim steps so the arm has
+        # time to track the commanded EE pose smoothly between action switches, instead of
+        # chasing a new absolute target every single step (which made it slam/over-press
+        # the soft block -> contact blow-ups during exploration).
+        self.decimation = 4
         self.episode_length_s = 5.0
 
         # simulation settings
         self.sim.dt = 1 / 60.0
         self.sim.render_interval = self.decimation
-        self.sim.gravity = (0.0, 0.0, 0.0)
+        self.sim.gravity = (0.0, 0.0, -9.81)  # was (0,0,0); enabled per user to see deformable fall under StiffGIPC
         self.sim.physics = PhysicsCfg()
 
         # viewer settings
-        self.viewer.origin_type = "asset_root"
-        self.viewer.asset_name = "robot"
-        self.viewer.env_index = 0
-        self.viewer.eye = (1.25, -1.5, 0.75)
+        # "world" (not "asset_root"): the camera no longer follows/re-centers on the
+        # robot, so it doesn't snap on env reset — free to orbit/pan manually.
+        self.viewer.origin_type = "world"
+        # pulled back + up to frame ALL 4 envs at once (2x2 grid, env_spacing 2.5 -> ~3 m span,
+        # centred ~(0.25, 0)); was (2,-2,1.5) which only showed ~1 env.
+        self.viewer.eye = (5.5, -5.5, 4.5)
+        self.viewer.lookat = (0.25, 0.0, 0.2)
         self.viewer.resolution = (1920, 1080)
+
+        # [replay-only] REPLAY_NO_RESET=1 disables all episode resets so each env runs
+        # continuously — watch sustained / successful behavior without reset stutter.
+        # Per-env independent anyway, but this removes the global reset-processing pause.
+        # Do NOT set during training (the policy needs resets to learn).
+        if os.environ.get("REPLAY_NO_RESET"):
+            self.episode_length_s = 1.0e6
+            self.terminations.time_out = None
+            self.terminations.deformable_outside_table = None
+            self.terminations.deformable_dropped = None
+            self.terminations.ee_below_table = None

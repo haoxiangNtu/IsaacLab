@@ -211,6 +211,7 @@ class LocomotionEnv(DirectRLEnv):
             self.cfg.death_cost,
             self.cfg.alive_reward_scale,
             self.motor_effort_ratio,
+            getattr(self.cfg, "standing_penalty_scale", 0.0),
         )
         return total_reward
 
@@ -267,6 +268,7 @@ def compute_rewards(
     death_cost: float,
     alive_reward_scale: float,
     motor_effort_ratio: torch.Tensor,
+    standing_penalty_scale: float = 0.0,
 ):
     heading_weight_tensor = torch.ones_like(heading_proj) * heading_weight
     heading_reward = torch.where(heading_proj > 0.8, heading_weight_tensor, heading_weight * heading_proj / 0.8)
@@ -289,6 +291,12 @@ def compute_rewards(
     alive_reward = torch.ones_like(potentials) * alive_reward_scale
     progress_reward = potentials - prev_potentials
 
+    # standing-still penalty: progress_reward ~= speed (m/s) toward the target. Penalize
+    # being slower than ~0.5 m/s so the policy must actually LOCOMOTE instead of camping
+    # in the degenerate "stand and twitch" alive-reward optimum (StiffGIPC ant tended to
+    # converge there). 0 scale = disabled (default for tasks that don't set it).
+    standing_penalty = standing_penalty_scale * torch.clamp(0.5 - progress_reward, min=0.0)
+
     total_reward = (
         progress_reward
         + alive_reward
@@ -297,6 +305,7 @@ def compute_rewards(
         - actions_cost_scale * actions_cost
         - energy_cost_scale * electricity_cost
         - dof_at_limit_cost
+        - standing_penalty
     )
     # adjust reward for fallen agents
     total_reward = torch.where(reset_terminated, torch.ones_like(total_reward) * death_cost, total_reward)

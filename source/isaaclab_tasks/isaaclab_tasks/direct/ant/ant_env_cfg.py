@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from isaaclab_newton.physics import KaminoSolverCfg, MJWarpSolverCfg, NewtonCfg
+from isaaclab_newton.physics import KaminoSolverCfg, MJWarpSolverCfg, NewtonCfg, StiffGIPCSolverCfg
 from isaaclab_ovphysx.physics import OvPhysxCfg
 from isaaclab_physx.physics import PhysxCfg
 
@@ -61,6 +61,28 @@ class AntPhysicsCfg(PresetCfg):
         use_cuda_graph=True,
     )
     ovphysx: OvPhysxCfg = OvPhysxCfg()
+    # StiffGIPC (IPC) — locomotion variant. Unlike cartpole this task is CONTACT-HEAVY
+    # (feet must push against the ground), so collision is ENABLED. The floating torso is
+    # a Newton FREE joint (skipped by the StiffGIPC joint builder -> a free ABD body that
+    # falls/contacts under gravity, i.e. a floating base); the 8 leg joints are REVOLUTE,
+    # effort-driven (set_joint_effort_target -> joint_f), so they are NOT position-driven.
+    stiffgipc: NewtonCfg = NewtonCfg(
+        solver_cfg=StiffGIPCSolverCfg(
+            use_effort_control=True,
+            skip_all_collision=False,  # feet need ground contact to walk
+            newton_iter_cap=150,
+            newton_tol=2.0e-1,  # with absolute eff_bbox (=1.0), this matches the 2-env-quality
+            absolute_dhat=1.0e-3,  # fixed IPC barrier distance (multi-env stable)
+            friction_rate=3.0,  # high foot grip so the feet don't slip when pushing off (locomotion traction)
+            joint_strength_ratio=1000.0,
+            revolute_driving_strength_ratio=0.0,  # legs are effort-driven, not position-held
+            collision_mesh_segments=8,  # simpler feet/legs (~81 verts/capsule) -> faster IPC contact
+            torso_skip_ground_collision=True,  # only legs/feet touch ground, not the torso sphere
+        ),
+        num_substeps=1,
+        debug_mode=False,
+        use_cuda_graph=False,
+    )
 
 
 @configclass
@@ -111,3 +133,7 @@ class AntEnvCfg(DirectRLEnvCfg):
 
     angular_velocity_scale: float = 1.0
     contact_force_scale: float = 0.1
+
+    # Penalty for being slower than ~0.5 m/s toward the target. Pushes the policy out of
+    # the degenerate "stand still and collect alive reward" optimum so it actually walks.
+    standing_penalty_scale: float = 1.0

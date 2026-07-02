@@ -173,6 +173,7 @@ folders = [
     "${exe-path}/exts",  # kit extensions
     "${exe-path}/extscore",  # kit core extensions
     "${exe-path}/../exts",  # isaac extensions
+    "${exe-path}/../extsDeprecated",  # isaac deprecated extensions (e.g. isaacsim.core.utils on IS6)
     "${exe-path}/../extscache",  # isaac cache extensions
     "${exe-path}/../extsPhysics",  # isaac physics extensions
     "${exe-path}/../isaacsim/exts",  # isaac extensions for pip
@@ -192,6 +193,8 @@ enabled=true # Enable this for DLSS
 "isaacsim.simulation_app" = {}
 "isaacsim.core.simulation_manager" = {}
 "isaacsim.core.version" = {}
+# Added for the TOUCHMANIP project which imports `isaacsim.core.utils.torch` (legacy core utils API).
+"isaacsim.core.utils" = {}
 
 ########################
 # Isaac Lab Extensions #

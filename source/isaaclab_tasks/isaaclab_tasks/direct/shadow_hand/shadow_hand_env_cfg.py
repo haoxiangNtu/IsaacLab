@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-from isaaclab_newton.physics import MJWarpSolverCfg, NewtonCfg
+from isaaclab_newton.physics import MJWarpSolverCfg, NewtonCfg, StiffGIPCSolverCfg
 from isaaclab_physx.physics import PhysxCfg
 
 import isaaclab.envs.mdp as mdp
@@ -121,6 +121,7 @@ class PhysxEventCfg:
 class ShadowHandEventCfg(PresetCfg):
     physx = PhysxEventCfg()
     newton_mjwarp = NewtonEventCfg()
+    stiffgipc = newton_mjwarp  # StiffGIPC is a Newton backend -> use the Newton variant
     default = physx
 
 
@@ -192,6 +193,7 @@ class ShadowHandRobotCfg(PresetCfg):
         },
         soft_joint_pos_limit_factor=1.0,
     )
+    stiffgipc = newton_mjwarp  # StiffGIPC is a Newton backend -> use the Newton robot variant
     default = physx
 
 
@@ -231,6 +233,7 @@ class ObjectCfg(PresetCfg):
         actuators={},
         articulation_root_prim_path="",
     )
+    stiffgipc = newton_mjwarp  # StiffGIPC is a Newton backend -> use the Newton object variant
     default = physx
 
 
@@ -248,6 +251,7 @@ class ShadowHandSceneCfg(PresetCfg):
     newton_mjwarp: InteractiveSceneCfg = InteractiveSceneCfg(
         num_envs=8192, env_spacing=0.75, replicate_physics=True, clone_in_fabric=False
     )
+    stiffgipc: InteractiveSceneCfg = newton_mjwarp  # StiffGIPC is a Newton backend
     default: InteractiveSceneCfg = physx
 
 
@@ -271,6 +275,39 @@ class PhysicsCfg(PresetCfg):
         ),
         num_substeps=2,
         debug_mode=False,
+    )
+    # StiffGIPC (IPC) — in-hand manipulation is StiffGIPC's strong suit: a FIXED-base hand
+    # (no floating-base issue) with dense finger<->object contact (IPC's accurate, penetration-
+    # free contact is the value-add). Unlike cartpole/ant (effort), the Shadow Hand is
+    # POSITION-controlled (set_joint_position_target), so use_effort_control=False and the
+    # revolute drive strength is >0 to track joint position targets. The manipulated object
+    # is a free rigid body (read back as a free ABD body). Collision is ON for hand<->object.
+    stiffgipc = NewtonCfg(
+        solver_cfg=StiffGIPCSolverCfg(
+            use_effort_control=False,  # POSITION control (joint position targets)
+            skip_all_collision=False,  # need finger<->object contact (the whole task)
+            newton_iter_cap=150,
+            newton_tol=2.0e-1,  # with absolute eff_bbox -> env-count-independent convergence
+            absolute_dhat=1.0e-3,  # fixed IPC barrier distance (multi-env stable)
+            friction_rate=1.0,  # finger grip on the object
+            # Per-frame joint slew cap — CRITICAL. The default 1.0 rad/frame lets the untrained
+            # policy's random position targets demand huge one-frame joint jumps that the IPC
+            # joint solve cannot converge (Newton pegs at the cap → the hand contorts/separates,
+            # same failure as the lift_franka_soft large-angle lockup). 0.1 rad/frame = 6 rad/s.
+            max_revolute_step_per_frame=0.1,
+            max_prismatic_step_per_frame=0.005,
+            joint_strength_ratio=1.0e5,  # attach kappa = sr*(m_p+m_c); finger links are gram-scale
+            # so sr=1000 gave kappa~5 (too weak -> visible joint separation). 1e5 -> kappa~500.
+            revolute_driving_strength_ratio=1000.0,  # drive revolute joints to position targets
+            prismatic_driving_strength_ratio=1000.0,
+            collision_mesh_segments=6,  # 12->6: ~134->~50 verts/link, ~60% fewer verts -> faster contact/CCD
+            # Only fingers/palm need contact (with the cube). Drop the whole arm's ground collision
+            # (forearm/wrist never touch the ground); hand self-collision is already excluded.
+            disable_articulation_ground_collision=True,
+        ),
+        num_substeps=1,
+        debug_mode=False,
+        use_cuda_graph=False,
     )
     default = physx
 

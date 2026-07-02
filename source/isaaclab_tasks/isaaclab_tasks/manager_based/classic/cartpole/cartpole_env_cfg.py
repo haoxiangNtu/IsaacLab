@@ -5,7 +5,7 @@
 
 import math
 
-from isaaclab_newton.physics import KaminoSolverCfg, MJWarpSolverCfg, NewtonCfg
+from isaaclab_newton.physics import KaminoSolverCfg, MJWarpSolverCfg, NewtonCfg, StiffGIPCSolverCfg
 from isaaclab_physx.physics import PhysxCfg
 
 import isaaclab.sim as sim_utils
@@ -72,6 +72,21 @@ class CartpolePhysicsCfg(PresetCfg):
         num_substeps=1,
         debug_mode=False,
         use_cuda_graph=True,
+    )
+    # StiffGIPC: effort-controlled cart (joint force) + free-swinging pole (drive
+    # strength 0). Cartpole has no contact (fixed rail + free pole), so skip
+    # collision. CUDA graph off (the IPC engine.step does host syncs).
+    stiffgipc: NewtonCfg = NewtonCfg(
+        solver_cfg=StiffGIPCSolverCfg(
+            use_effort_control=True,
+            skip_all_collision=True,
+            newton_iter_cap=50,
+            newton_tol=5.0e-2,  # TEST: looser convergence + lower connection penalty combined
+            joint_strength_ratio=200.0,
+        ),
+        num_substeps=1,
+        debug_mode=False,
+        use_cuda_graph=False,
     )
 
 

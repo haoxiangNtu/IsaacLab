@@ -46,6 +46,13 @@ class StiffGIPCSolverCfg(NewtonSolverCfg):
     relative_dhat: float = 1.0e-3
     """IPC barrier activation distance, relative to the scene bounding box."""
 
+    absolute_dhat: float = 0.0
+    """Absolute IPC barrier activation distance [m]. When > 0 it OVERRIDES the
+    relative_dhat*scene_bbox scaling so dHat is a FIXED distance, independent of
+    num_envs (the relative form scales with the full multi-env bounding box, which
+    couples/varies contact behavior across env counts). Recommended for multi-env
+    training. 0 = use relative_dhat (legacy scene-bbox-scaled)."""
+
     friction_rate: float = 0.4
     """Coulomb friction coefficient."""
 
@@ -92,6 +99,33 @@ class StiffGIPCSolverCfg(NewtonSolverCfg):
     arm↔ground contact so a manipulator isn't stopped/perturbed by the engine ground
     plane (z=0). FEM/free bodies keep ground contact, so a soft object still rests.
     """
+
+    object_collision_link_filter: tuple = ()
+    """Link-name substrings that MAY collide with the deformable object; every OTHER robot
+    link is excluded from it. Empty = all links collide.
+
+    WHICH links form the "gripper" is task knowledge, so the task cfg specifies it here
+    (e.g. the Franka lift task passes ``("finger", "hand")`` to restrict object contact to
+    the gripper). Forces a fingers grasp (the policy can't shove the object with the
+    forearm/elbow) and cuts the contact-pair count → faster solve → more parallel envs.
+    """
+
+    torso_skip_ground_collision: bool = False
+    """Skip IPC ground-plane collision for the torso / floating base (the FREE-joint child).
+
+    Only the legs/feet then contact the ground. For a legged robot the torso (e.g. the
+    Ant's body sphere + shoulder capsules) should never touch the floor; excluding it
+    removes spurious torso-ground contacts and ground-barrier work, leaving clean
+    foot-ground traction. Other free/FEM bodies keep ground contact."""
+
+    collision_mesh_segments: int = 32
+    """Tessellation resolution for primitive collision shapes (capsule/sphere/cylinder/cone).
+
+    StiffGIPC's IPC cost scales with the collision vertex/contact count. At the default 32
+    a single capsule becomes 1089 vertices, so a multi-capsule robot (e.g. the Ant's 8
+    capsule legs ≈ 8700 verts) is very slow and ill-conditioned. Lowering this (e.g. 8 →
+    81 verts/capsule, ~13× fewer) gives a large speedup for a small loss of contact-surface
+    smoothness. Mesh/convex-mesh shapes are used as-is and unaffected."""
 
     stiffgipc_root: str | None = None
     """Filesystem path to the StiffGIPC python package (else STIFFGIPC_ROOT env / default)."""

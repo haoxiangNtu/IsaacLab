@@ -66,6 +66,115 @@ def deformable_ee_distance(
     return 1.0 - torch.tanh(distance / std)
 
 
+def ee_below_table_penalty(
+    env: ManagerBasedRLEnv,
+    table_height: float = 0.0,
+    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
+) -> torch.Tensor:
+    """Graded penalty for the end-effector dipping below the table surface.
+
+    StiffGIPC disables arm<->ground IPC contact, so nothing physically stops the
+    arm from passing through the table; the untrained policy overshoots downward
+    (the dominant ``ee_below_table`` termination). Returns the depth below the
+    table (>=0); pair with a NEGATIVE weight so the policy gets a gradient pushing
+    the EE back up instead of only a sparse episode-end signal.
+
+    Returns:
+        Depth below the table per env [m], clamped >= 0, shape ``(num_envs,)``.
+    """
+    ee_frame: FrameTransformer = env.scene[ee_frame_cfg.name]
+    ee_z = wp.to_torch(ee_frame.data.target_pos_w)[..., 0, 2]
+    return torch.clamp(table_height - ee_z, min=0.0)
+
+
+def reach_above_cube(
+    env: ManagerBasedRLEnv,
+    height: float = 0.10,
+    std: float = 0.1,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("deformable"),
+    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
+) -> torch.Tensor:
+    """Stage 1: reward the EE reaching a pre-grasp point ABOVE the cube COM.
+
+    Target = cube COM + (0,0,height). Pulling the EE to a point above the cube makes
+    the from-above approach the rewarded path (vs diving through the table).
+    """
+    asset: DeformableObject = env.scene[asset_cfg.name]
+    ee_frame: FrameTransformer = env.scene[ee_frame_cfg.name]
+    com = wp.to_torch(asset.data.nodal_pos_w).mean(dim=1)
+    target = com.clone()
+    target[:, 2] = target[:, 2] + height
+    ee = wp.to_torch(ee_frame.data.target_pos_w)[..., 0, :]
+    distance = torch.linalg.norm(ee - target, dim=1)
+    return 1.0 - torch.tanh(distance / std)
+
+
+def reach_grasp_from_above(
+    env: ManagerBasedRLEnv,
+    align_radius: float = 0.05,
+    std: float = 0.05,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("deformable"),
+    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
+) -> torch.Tensor:
+    """Stage 2: reward descending to the cube COM, ONLY when the EE is horizontally
+    aligned over the cube (within ``align_radius``). The horizontal gate enforces a
+    from-above descent — the EE cannot earn this from the side or from below.
+    """
+    asset: DeformableObject = env.scene[asset_cfg.name]
+    ee_frame: FrameTransformer = env.scene[ee_frame_cfg.name]
+    com = wp.to_torch(asset.data.nodal_pos_w).mean(dim=1)
+    ee = wp.to_torch(ee_frame.data.target_pos_w)[..., 0, :]
+    horiz = torch.linalg.norm(ee[:, :2] - com[:, :2], dim=1)
+    gate = (horiz < align_radius).float()
+    distance = torch.linalg.norm(ee - com, dim=1)
+    return gate * (1.0 - torch.tanh(distance / std))
+
+
+def grasp_when_close(
+    env: ManagerBasedRLEnv,
+    max_dist: float = 0.04,
+    action_name: str = "gripper_action",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("deformable"),
+    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
+) -> torch.Tensor:
+    """Stage 3: reward CLOSING the gripper only when the EE (grasp point between the
+    fingers) is within ``max_dist`` of the cube — i.e. the fingers straddle the cube.
+    Replaces the blanket gripper-close penalty: encourages closing at the right moment
+    instead of forbidding it.
+    """
+    asset: DeformableObject = env.scene[asset_cfg.name]
+    ee_frame: FrameTransformer = env.scene[ee_frame_cfg.name]
+    com = wp.to_torch(asset.data.nodal_pos_w).mean(dim=1)
+    ee = wp.to_torch(ee_frame.data.target_pos_w)[..., 0, :]
+    near = (torch.linalg.norm(ee - com, dim=1) < max_dist).float()
+    gripper_action = env.action_manager.get_term(action_name).raw_actions
+    closing = torch.any(gripper_action < 0.0, dim=1).float()
+    return near * closing
+
+
+def block_impact_penalty(
+    env: ManagerBasedRLEnv,
+    vel_threshold: float = 0.5,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("deformable"),
+) -> torch.Tensor:
+    """Penalty for the gripper pressing/slamming the soft block too hard (per-env).
+
+    The barrier-based IPC contact blows up (Newton hits the iteration cap, Kappa
+    explodes) when the gripper drives deep/fast into the block during exploration. The
+    block's nodal speed spikes on such a violent press, so penalize the max nodal speed
+    above ``vel_threshold`` — a gentle grasp / slow lift stays under it. This is the
+    per-env, GPU-side equivalent of "punish the Newton=150 blow-up": discourage the
+    behaviour that causes it. Pair with a NEGATIVE weight.
+
+    Returns:
+        Per-env excess nodal speed above the threshold [m/s], clamped >= 0, shape ``(num_envs,)``.
+    """
+    asset: DeformableObject = env.scene[asset_cfg.name]
+    nodal_vel = wp.to_torch(asset.data.nodal_vel_w)  # (N, nodes, 3)
+    max_speed = torch.linalg.norm(nodal_vel, dim=2).max(dim=1).values  # (N,)
+    return torch.clamp(max_speed - vel_threshold, min=0.0)
+
+
 def deformable_com_goal_distance(
     env: ManagerBasedRLEnv,
     std: float,

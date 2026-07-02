@@ -12,6 +12,11 @@ __all__ = [
     "deformable_lifted",
     "deformable_outside_table_bounds",
     "ee_below_minimum",
+    "ee_below_table_penalty",
+    "reach_above_cube",
+    "reach_grasp_from_above",
+    "grasp_when_close",
+    "block_impact_penalty",
     "gripper_close_action",
 ]
 
@@ -23,6 +28,11 @@ from .rewards import (
     deformable_lifted,
     deformable_outside_table_bounds,
     ee_below_minimum,
+    ee_below_table_penalty,
+    reach_above_cube,
+    reach_grasp_from_above,
+    grasp_when_close,
+    block_impact_penalty,
     gripper_close_action,
 )
 from isaaclab.envs.mdp import *
